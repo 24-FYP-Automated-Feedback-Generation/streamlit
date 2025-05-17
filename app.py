@@ -1,10 +1,8 @@
 import streamlit as st
 import requests
 import json
-import ast
-import textwrap
 import pandas as pd
-import numpy as np
+import textwrap
 
 # ------------------- Config -------------------
 HF_API_URL = "https://api-inference.huggingface.co/models/YOUR_USERNAME/YOUR_MODEL"
@@ -40,40 +38,41 @@ def collect_metacognitive_vector():
         vector.append(CHOICES[choice])
     return vector
 
-def run_student_code(code, test_cases):
-    namespace = {}
-    try:
-        exec(code, namespace)
-        func = [v for k, v in namespace.items() if callable(v)][0]
-        for inp, expected in test_cases:
-            result = func(*inp)
-            if result != expected:
-                return False, (inp, result, expected)
-        return True, None
-    except Exception as e:
-        return False, str(e)
-
 def generate_feedback(metacog_vector, problem, student_code, expected_code):
     payload = {
-        "inputs": f"<METACOG>{json.dumps(metacog_vector)}</METACOG> "
-                  f"<PROBLEM>{problem}</PROBLEM> "
+        "inputs": f"<PROBLEM>{problem}</PROBLEM> "
                   f"<STUDENTCODE>{student_code}</STUDENTCODE> "
                   f"<EXPECTEDCODE>{expected_code}</EXPECTEDCODE>"
+                  f"<METACOG>{json.dumps(metacog_vector)}</METACOG>"
     }
     response = requests.post(HF_API_URL, headers=HEADERS, json=payload)
-    return response.json()[0]['generated_text'] if isinstance(response.json(), list) else response.json()
+    try:
+        result = response.json()
+        if isinstance(result, list):
+            return result[0]['generated_text']
+        return result
+    except Exception as e:
+        return f"⚠️ Error generating feedback: {e}"
 
 # ------------------- UI -------------------
 st.title("🧠 Metacognitive Feedback Tutor")
 
-# 1. Questionnaire
+# Step 1: Questionnaire
 st.header("Step 1: Metacognitive Questionnaire")
 with st.form("questionnaire_form"):
-    metacog_vector = collect_metacognitive_vector()
+    metacog_vector_input = collect_metacognitive_vector()
     submitted = st.form_submit_button("Submit Questionnaire")
 
-# Display the vector after submission
 if submitted:
+    st.session_state["metacog_vector"] = metacog_vector_input
+    st.session_state["submitted_questionnaire"] = True
+
+# Step 2: Problem + Step 3: Code
+if st.session_state.get("submitted_questionnaire", False):
+
+    # Safe retrieval of vector
+    metacog_vector = st.session_state.get("metacog_vector", [])
+
     with st.expander("📊 View Your Metacognitive Vector"):
         vector_df = pd.DataFrame({
             'Question': [f"Q{i+1}" for i in range(16)],
@@ -82,9 +81,6 @@ if submitted:
         st.dataframe(vector_df, use_container_width=True)
         st.markdown("### Your Metacognitive Vector")
 
-
-# 2. Problem
-if submitted:
     st.success("✅ Questionnaire submitted. Now attempt the problem.")
     st.header("Step 2: Problem - Emma’s Workshop")
     problem = (
@@ -101,75 +97,49 @@ if submitted:
     )
     st.markdown(f"```markdown\n{problem}\n```")
 
-    # 3. Code Input
     st.header("Step 3: Write Your Solution")
     student_code = st.text_area("✍️ Write your function below:", height=250, key="studentcode")
-    st.markdown("```python\n" + student_code + "\n```")
-    # expected_code = st.text_area("✅ (Optional) Reference implementation:", height=200)
 
-    # 4. Test Cases Input
-    st.subheader("📥 Test Cases")
-    default_tests = "[(([2, 5, 3, 1],), 2), (([3, 4, 2, 5, 1],), 2)]"
-    test_cases_input = st.text_area("Enter test cases:", value=default_tests)
-    try:
-        test_cases = ast.literal_eval(test_cases_input)
-    except:
-        st.error("❌ Test cases must be a list of tuples.")
-        test_cases = []
-
-    # 5. Action Buttons
-    col1, col2 = st.columns(2)
-    # run_check = col1.button("Run & Submit")
-    # ask_help = col2.button("Ask for Feedback")
-    submitted_code = st.button("🚀 Submit Code")
-
-
-
-    # 6. Results
-    if submitted_code:
+    # Button to submit code
+    if st.button("🚀 Submit Code"):
         if not student_code.strip():
             st.warning("⚠️ Please enter your code.")
-        elif not test_cases:
-            st.warning("⚠️ Please provide valid test cases.")
         else:
-            passed, failed_cases = run_student_code(student_code, test_cases)
-            if isinstance(failed_cases, str):  # error in code
-                st.error(f"❌ Code execution error: {failed_cases}")
-            else:
-                st.subheader("✅ Test Case Results")
-                results_table = []
-                for inp, expected in test_cases:
-                    try:
-                        namespace = {}
-                        exec(student_code, namespace)
-                        func = [v for k, v in namespace.items() if callable(v)][0]
-                        result = func(*inp)
-                        status = "✅ Passed" if result == expected else "❌ Failed"
-                        results_table.append({
-                            "Input": str(inp),
-                            "Expected": expected,
-                            "Your Output": result,
-                            "Status": status
-                        })
-                    except Exception as e:
-                        results_table.append({
-                            "Input": str(inp),
-                            "Expected": expected,
-                            "Your Output": str(e),
-                            "Status": "❌ Error"
-                        })
-                st.dataframe(pd.DataFrame(results_table))
+            st.session_state["student_code"] = student_code
+            st.session_state["problem"] = problem
 
-            if not passed:
-                st.markdown("### 😕 Need Help?")
-                if st.button("🧠 Get Feedback"):
-                    st.info("💬 Generating feedback based on your solution and questionnaire...")
-                    # expected_code should be defined or fetched
-                    expected_code = ""  # You can optionally provide a reference solution here
-                    feedback = generate_feedback(metacog_vector, problem, student_code, expected_code)
-                    st.subheader("📘 Tutor Feedback")
-                    st.markdown(f"```markdown\n{textwrap.fill(feedback, 90)}\n```")
-            else:
-                st.success("🎉 All test cases passed! Great job!")
+            st.info("💬 Generating feedback based on your solution and questionnaire...")
 
+            expected_code = """def getswaps(d):
+    swap = 0
+    for x in d.keys():
+        y = d[x]
+        while x != y:
+            swap += 1
+            d[x] = d[y]
+            d[y] = y
+            y = d[x]
+    return swap
 
+def rearrangeWorkshop(arr):
+    arrs = sorted(arr)
+    d1 = {}
+    d2 = {}
+    for i in range(len(arr)):
+        d1[arr[i]] = arrs[i]
+        d2[arr[i]] = arrs[len(arr) - 1 - i]
+    return min(getswaps(d1), getswaps(d2))"""
+
+            feedback = generate_feedback(
+                st.session_state["metacog_vector"],
+                st.session_state["problem"],
+                student_code,
+                expected_code
+            )
+
+            st.session_state["feedback"] = feedback
+
+    # Display feedback if available
+    if "feedback" in st.session_state:
+        st.subheader("📘 Tutor Feedback")
+        st.markdown(f"```markdown\n{textwrap.fill(str(st.session_state['feedback']), 90)}\n```")
